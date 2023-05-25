@@ -1,0 +1,384 @@
+---
+title: "31006 Project_Bakery"
+author: "Mia Zhang"
+date: "2023-05-23"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+setwd("/Users/miaya/Documents/Documents - Mia’s MacBook Pro/MScA/Spring 23/31006 Time Series Analysis and Forecasting/Project_TS/")
+```
+
+# Installing libraries
+
+```{r}
+library(ggplot2)
+library(lubridate)
+library(zoo)
+library(tseries)
+library(xts)
+```
+
+
+# Loading data
+
+```{r}
+data <- read.csv("Bakery sales.csv")
+head(data, n = 5)
+
+# Check data structure
+str(data)
+```
+
+
+# Preprocessing data
+
+```{r}
+# Convert unit_price from char to num
+data$unit_price <- as.numeric(gsub(",", ".", gsub("€", "", data$unit_price)))
+
+# Add column total_sale for Quantity*unit_price
+data$total_sales <- data$Quantity * data$unit_price
+
+# Drop the first column
+data <- data[, -1]
+```
+
+```{r}
+# Convert 'date' column to Date format (if not already)
+data$date <- as.Date(data$date)
+
+# Group by date and calculate sum of quantity and total sales
+sales <- aggregate(cbind(Quantity, total_sales) ~ date, data = data, FUN = sum)
+
+# Add column avg_unit_price for total_sales/Quantity
+sales$avg_unit_price <- sales$total_sales / sales$Quantity
+
+# Print the summary table
+print(sales)
+
+```
+
+# EDA - Part 1
+
+```{r}
+# Print out statistical summary of the data
+summary(sales)
+```
+
+
+```{r}
+# Plot total sales and quantity 
+ggplot(sales, aes(x = date)) +
+  geom_line(aes(y = total_sales, color = "Total Sales")) +
+  geom_line(aes(y = Quantity, color = "Quantity")) +
+  xlab("Date") +
+  ylab("Value") +
+  ggtitle("Daily Sales and Quantity Over Time") +
+  scale_color_manual(values = c("Total Sales" = "orange", "Quantity" = "black")) +
+  theme_minimal()
+
+
+# Plot for average unit price
+plot_avg_unit_price <- ggplot(sales, aes(x = date, y = avg_unit_price)) +
+  geom_line(color = 'blue') +
+  xlab("Date") +
+  ylab("Average Unit Price") +
+  ggtitle("Average Unit Price Over Time")
+
+plot_avg_unit_price
+```
+
+# Processing data
+
+```{r}
+# Generate a sequence of dates
+start_date <- as.Date("2021-01-01")
+end_date <- as.Date("2022-09-30")
+dates <- seq(start_date, end_date, by = "day")
+
+# Create a dataframe with the dates
+dates <- data.frame(date = dates)
+
+# Add year, month, and day columns
+dates$Year <- year(dates$date)
+dates$Month <- month(dates$date)
+dates$Day <- day(dates$date)
+
+# Left join sales to dates which contains continous date on date
+sales_df <- merge(dates, sales, by = "date", all.x = TRUE)
+```
+
+```{r}
+# Check for missing data in sales_df
+sum(is.na(sales_df$total_sales))
+
+sales_df$total_sales
+```
+
+
+
+```{r}
+# Plot distribution of total_sales
+g <- ggplot(sales_df, aes(total_sales)) +
+  geom_histogram(color = "#000000", fill = "gray") +
+  ggtitle("Distribution of Daily Sales") +
+  theme_classic() +
+  theme(plot.title = element_text(size = 18))
+
+ggsave("/Users/miaya/Documents/Documents - Mia’s MacBook Pro/MScA/Spring 23/31006 Time Series Analysis and Forecasting/Project_TS/plot.png", g, width = 10, height = 6)
+```
+
+
+
+```{r}
+# Impute missing data using monthly mean
+# Create new columns to store the mean values for each month
+sales_df$mean_total_sales <- ave(sales_df$total_sales, format(sales_df$date, "%Y-%m"), FUN = function(x) mean(x, na.rm = TRUE))
+sales_df$mean_Quantity <- ave(sales_df$Quantity, format(sales_df$date, "%Y-%m"), FUN = function(x) mean(x, na.rm = TRUE))
+sales_df$mean_unit_price <- ave(sales_df$avg_unit_price, format(sales_df$date, "%Y-%m"), FUN = function(x) mean(x, na.rm = TRUE))
+
+# Replace the missing values in the "total_sales" column with the corresponding monthly mean values
+sales_df$total_sales[is.na(sales_df$total_sales)] <- sales_df$mean_total_sales[is.na(sales_df$total_sales)]
+sales_df$Quantity[is.na(sales_df$Quantity)] <- sales_df$mean_Quantity[is.na(sales_df$Quantity)]
+sales_df$avg_unit_price[is.na(sales_df$avg_unit_price)] <- sales_df$mean_unit_price[is.na(sales_df$avg_unit_price)]
+
+# Plot distribution of total_sales
+ggplot(sales_df, aes(total_sales)) +
+  geom_histogram(color = "#000000", fill = "#0099F8") +
+  ggtitle("Distribution of Daily Sales after Imputation") +
+  theme_classic() +
+  theme(plot.title = element_text(size = 18))
+```
+
+```{r}
+# Training/Test split (2022-09-01)
+train_data <- sales_df[1:608,]
+test_data <- sales_df[609:638,]
+
+# Convert to ts
+sales_ts <- xts(sales_df$total_sales, order.by = sales_df$date)
+```
+
+
+# EDA - Part 2
+
+```{r}
+# Generate a correlation matrix of the numeric columns
+cor_sales <- cor(sales_df[,5:7])
+
+# Plot the correlation matrix using corrplot
+library(corrplot)
+corrplot(cor_sales, method = "circle", type = "upper", tl.col = "black")
+
+# Print the correlation values
+print(cor_sales)
+```
+
+## Test stationarity of the time series (Autocorrelation)
+
+```{r}
+# EDA - Qualitative Analysis
+acf(sales_df$total_sales, main="ACF plot of Daily Sales")
+pacf(sales_df$total_sales, main="PACF plot of Daily Sales")
+```
+
+## Test stationarity of the time series 
+With a p-value of ADF test is 0.049, which is slightly lower than the typical significance level of 0.05, we reject the null hypothesis that the time series is non-stationary. This suggests that the training data is likely stationary?
+The p-value of KPSS test is 0.01, which is way smaller than the typical significance level of 0.05, leading us to reject the null hypothesis that the time series is stationary. Thus, we have evidence to suggest that the training data is non-stationary based on the KPSS test?
+Overall no-stationary?
+```{r message = FALSE, warning=FALSE}
+# EDA - Quantitative analysis / Stationarity Check
+adf_result <- adf.test(sales_df$total_sales)
+kpss_result <- kpss.test(sales_df$total_sales, null = 'Trend')
+cat("ADF test p-value of training data: ", adf_result$p.value, "\n")
+cat("KPSS test p-value of training data: ", kpss_result$p.value, "\n")
+```
+
+
+## Decompose the time series
+```{r}
+# Convert sales_ts to weekly frequency
+sales_weekly <- ts(sales_ts, frequency = 7)
+sales_testtesttest <- ts(sales_ts)
+
+decompose_weekly <- decompose(sales_weekly)
+autoplot(decompose_weekly)
+```
+## Decompose the train_data
+```{r}
+# Convert sales_ts to weekly frequency
+train_weekly <- xts(train_data$total_sales, order.by = train_data$date)
+train_weekly <- ts(train_weekly, frequency = 7)
+
+decompose_train <- decompose(train_weekly)
+autoplot(decompose_train)
+```
+
+
+```{r}
+plot(decompose_train$random)
+```
+
+
+```{r message = FALSE, warning= FALSE}
+# Check for stationarity after decomposition
+adf_result <- adf.test(na.omit(decompose_train$random))
+kpss_result <- kpss.test(na.omit(decompose_train$random))
+cat("ADF test p-value of training data: ", adf_result$p.value, "\n")
+cat("KPSS test p-value of training data: ", kpss_result$p.value, "\n")
+```
+
+
+# Simple ARIMA
+
+```{r}
+library(forecast)
+
+train_ts <- ts(train_data$total_sales, frequency = 365)
+
+m_sarima <- auto.arima(train_ts, seasonal = TRUE)
+forecast_sarima <- forecast(m_sarima, h = 30)
+
+# Select date and total_sales from dataframe
+sales_actual <- select(test_data, c("date", "total_sales"))
+
+accuracy(sales_actual$total_sales, forecast_sarima$mean)
+```
+```{r}
+summary(m_)
+```
+
+
+```{r}
+# Convert forecasted ts to a dataframe
+pred_sarima_df <- data.frame(date = seq(as.Date("2022-09-01"), as.Date("2022-09-30"), by = "day"),
+                          forecasted_sales = as.numeric(forecast_sarima$mean))
+
+# Merge the forecasted values and the actual values based on the date column
+comparison_s <- merge(pred_sarima_df, sales_actual, by = "date", all = TRUE)
+
+# Plot prediction vs actual
+ggplot(comparison_s) +
+  geom_line(aes(x = date, y = forecasted_sales, color = "Forecast")) +
+  geom_line(aes(x = date, y = total_sales, color = "Actual")) +
+  xlab("Date") +
+  ylab("Value") +
+  ggtitle("Forecast vs Actual for SARIMA") +
+  scale_color_manual(values = c("Forecast" = "orange", "Actual" = "black"))
+
+```
+
+
+
+
+
+# Simple Prophet Model
+
+```{r}
+library(prophet)
+
+# Select date and total_sales from dataframe
+sales_ph <- select(train_data, c("date", "total_sales"))
+
+# Rename columns
+colnames(sales_ph) <- c('ds', 'y')
+
+# Generate a prophet model and 
+# forecast 30 days into the future after the training data
+m_prophet <- prophet(sales_ph)
+future <- make_future_dataframe(m_prophet, periods=30)
+forecast_ph <- predict(m_prophet, future)
+```
+
+
+```{r}
+# Plot the forecast
+plot(m_prophet, forecast_ph)
+
+# Plotting the components of the forecast
+prophet_plot_components(m_prophet, forecast_ph)
+```
+
+
+```{r}
+# Select forecast result
+pred_yhat <- forecast_ph[609:638, c("ds", "yhat")]
+# Convert date to Date
+pred_yhat$ds <- as.Date(pred_yhat$ds)
+
+# Select date and total_sales from dataframe
+sales_actual <- select(test_data, c("date", "total_sales"))
+
+# Rename columns
+colnames(sales_actual) <- c('ds', 'y')
+
+# Merge the forecasted values and the actual values based on the date column
+comparison <- merge(pred_yhat, sales_actual, by = "ds", all = TRUE)
+
+# Plot
+ggplot(comparison) +
+  geom_line(aes(x = ds, y = yhat, color = "Forecast")) +
+  geom_line(aes(x = ds, y = y, color = "Actual")) +
+  xlab("Date") +
+  ylab("Value") +
+  ggtitle("Forecast vs Actual for Prophet") +
+  scale_color_manual(values = c("Forecast" = "orange", "Actual" = "black"))
+
+# Check for accuracy
+accuracy(sales_actual$y, pred_yhat$yhat)
+```
+
+# Feature engineering - Augment to monthly data
+
+```{r}
+library(dplyr)
+
+# Group the data by year and month and calculate the sum of total sales
+month_df <- sales_df %>%
+  group_by(Year, Month) %>%
+  summarise(total_sales = sum(total_sales))
+
+# Create new column date 
+month_df$date <- as.Date(paste(month_df$Year, month_df$Month, "01", sep = "-"), format = "%Y-%m-%d")
+
+# Drop Year and Month column
+month_df <- month_df[, !(names(month_df) %in% c("Year", "Month"))]
+
+# Training/Test split
+train_month <-month_df [1:20,]
+test_month <- month_df [21:21,]
+```
+
+# Simple Prophet 2
+
+```{r}
+# Select date and total_sales from dataframe
+sales_ph_2 <- select(train_month, c("date", "total_sales"))
+
+# Rename columns
+colnames(sales_ph_2) <- c('ds', 'y')
+
+# Generate a prophet model and 
+# forecast 30 days into the future after the training data
+m_prophet_2 <- prophet(sales_ph_2)
+future_2 <- make_future_dataframe(m_prophet_2, periods=1)
+forecast_ph_2 <- predict(m_prophet_2, future_2)
+```
+```{r}
+# Plot the forecast
+plot(m_prophet_2, forecast_ph_2)
+
+# Plotting the components of the forecast
+prophet_plot_components(m_prophet_2, forecast_ph_2)
+```
+
+```{r}
+# Select forecast result
+pred_yhat_2 <- forecast_ph_2[21:21, c("ds", "yhat")]
+
+# Calculate the RMSE
+rmse2 <- sqrt(mean((test_month$total_sales - pred_yhat_2$yhat)^2))
+rmse2
+```
